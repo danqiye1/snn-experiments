@@ -7,16 +7,18 @@
 # 
 # The phenomenon of catastrophic forgetting, or catastrophic interference, was first observed by McCloskey and Cohen (1989). It is especially salient in online learning, where training data is fed sequentially to a machine learning model for training. In this notebook, we will explore the effects of catastrophic interference in the PES learning rule on MNIST data.
 
-# In[13]:
+# In[15]:
 
 
 import nengo
+import nengo_dl
 import numpy as np
 import tensorflow as tf
 from PIL import Image
 from nengo_extras.gui import image_display_function
 from nengo_extras.vision import Gabor, Mask
 from nengo_extras.data import one_hot_from_labels
+from nengo.utils.filter_design import cont2discrete
 from nengo_gui.ipython import IPythonViz
 
 
@@ -24,7 +26,7 @@ from nengo_gui.ipython import IPythonViz
 # 
 # We will experiment on catastrophic interference with MNIST.
 
-# In[14]:
+# In[2]:
 
 
 (X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
@@ -33,7 +35,7 @@ n_test = len(y_test)
 n_classes = len(np.unique(y_train))
 
 
-# In[15]:
+# In[3]:
 
 
 Image.fromarray(X_train[0])     .resize((height * 5, width * 5))     .show()
@@ -43,7 +45,7 @@ print(f"Max Pixel Val: {np.max(X_train[0])}")
 print(f"Min Pixel Val: {np.min(X_train[0])}")
 
 
-# In[16]:
+# In[4]:
 
 
 # Batch preprocess the data into unit vector.
@@ -53,7 +55,7 @@ def preprocess(X):
     return X / np.linalg.norm(X, axis=1, keepdims=True)
 
 
-# In[17]:
+# In[5]:
 
 
 # Preprocessing and One hot encode
@@ -67,7 +69,7 @@ y_test = one_hot_from_labels(y_test)
 # 
 # We build a 2 ensemble neural network with Nengo, and set the learning with PES learning rule.
 
-# In[18]:
+# In[6]:
 
 
 # Some network configuration hyperparameters
@@ -77,7 +79,7 @@ n_neurons = 5000
 
 # Neural networks in Nengo are fixed-encoding networks, whereby the encoders are fixed to a certain randomly generated value. Previous research has shown that Gabor filters best extracts the features of an image. Unlike in deep learning, where these Gabor filters are derived from backpropagation, we can only generate these Gabor filters randomly because backpropagation cannot be used in fixed-encoding SNN.
 
-# In[19]:
+# In[7]:
 
 
 # Generate the encoders for the neural ensemble
@@ -88,7 +90,7 @@ encoders = Gabor().generate(n_neurons, gabor_size, rng=rng)
 encoders = Mask((height, width)).populate(encoders, rng=rng, flatten=True)
 
 
-# In[20]:
+# In[8]:
 
 
 from matplotlib import pyplot as plt
@@ -97,7 +99,7 @@ plt.imshow(encoders[1].reshape(28,28), cmap="gray")
 
 # Below is the nengo model rendered as an interactive demo in Nengo GUI. You can see the effects of catastrophic forgetting when you inhibit the learning by moving the slider of inhibitor to 1 (Wait for 30s for the simulation to run and learn)
 
-# In[31]:
+# In[14]:
 
 
 with nengo.Network(seed=3) as model:
@@ -164,3 +166,86 @@ IPythonViz(model)
 
 
 # You should see that once inhibitor is turned on, the neural network stops learning and just predicts everything as the predicted label of the last seen sample. This means that the last seen sample before inhibition has turned on has caused catastrophic forgetting in the synapse weights between pre-synaptic and post-synaptic neuron ensemble. This needs to be mitigated.
+
+# ## Legendre Memory Units
+# 
+# LMUs is a type of recurrent neural network cell that aims to implement a perfect delay. It was first published by Volker, Kajic and Eliasmith (NeurIPs 2019) and has been shown to beat LSTMs on psMNIST dataset.
+# 
+# <img src="https://i.imgur.com/IJGUVg6.png" alt="drawing" width="500"/>
+
+# In[17]:
+
+
+class LMUCell(nengo.Network):
+    """ Legendre Memory Unit """
+    
+    def __init__(self, units, order, theta, input_d, **kwargs):
+        """ Constructor for LMU
+        
+        :param units:
+        :param order: The order of Lengendre Polynomials to use.
+        :param theta: Delay amount defining the sliding window from [t-theta, t]. 
+                Can also be interpreted as length of time window.
+        :param input_d: Dimension of input signal X
+        """
+        super().__init__(**kwargs)
+        
+        # Compute the analytically derived weight matrices used in LMU
+        # These are determined statistically based on the theta/order parameters.
+        Q = np.arange(order, dtype=np.float64)
+        R = (2 * Q + 1)[:, None] / theta
+        j, i = np.mesgrid(Q, Q)
+        
+        A = np.where(i < j, -1, (-1, 0) ** (i - j + 1) * R)
+        B = (-1.0) ** Q[:, None] * R
+        C = np.ones((1, order))
+        D = np.zeros((1,))
+        
+        A, B, _, _, _ = cont2discrete((A, B, C, D), dt=1.0, method="zoh")
+        
+        with self:
+            nengo_dl.configure_settings(trainable=None)
+            
+            # Create objects corresponding to x/u/m/h variables of LMU cell
+            # There is a bit of notational change compared to X and U in NEF
+            # self.u is the input as seen by the dynamical system, self.m is the state from previous time,
+            # self.x is our actual data input.
+            self.x = nengo.Node(size_in=input_d)
+            self.u = nengo.Node(size_in=1)
+            self.m = nengo.Node(size_in=order)
+            self.h = nengo_dl.TensorNode(tf.nn.tanh, shape_in(units,), pass_time=False)
+            
+            # Compute u_t in the LMU cell. We have removed e_h and e_m as they are not needed in
+            # the psMNIST task. e_x is trainable, but initialized to np.ones instead of nengo_dl.dists.Glorot()
+            nengo.Connection(
+                self.x, self.u, transform=np.ones((1, input_d), synapse=None)
+            )
+            
+            # Compute m_t
+            # In this implementation we'll make A and B non-trainable, but they
+            # can also be optimized in the same way as other parameters. Note
+            # that setting synapse=0 (versus synapse=None) adds a one-timestep
+            # delay, so we can think of any connections with synapse=0 as representing
+            # value_{t-1}
+            conn_A = nengo.Connection(self.m, self.m, transform=A, synapse=0)
+            self.config[conn_A].trainable = False
+            conn_B = nengo.Connection(self.u, self.m, transform=B, synapse=None)
+            self.config[conn_B].trainable = False
+            
+            # Compute h_t
+            nengo.Connection(
+                # This is the W_x connection
+                self.x, self.h, transform=nengo_dl.dists.Glorot(), synapse=None
+            )
+            nengo.Connection(
+                # This is the W_h connection
+                self.h, self.h, transform=nengo_dl.dists.Glorot(), synapse=0
+            )
+            nengo.Connection(
+                # This is the W_m connection
+                self.m, self.h, transform=nengo_dl.dists.Glorot(), synapse=None
+            )
+            
+
+
+# In the above code, conn_A and conn_B 
