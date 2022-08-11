@@ -103,7 +103,7 @@ plt.imshow(encoders[1].reshape(28,28), cmap="gray")
 
 
 
-    <matplotlib.image.AxesImage at 0x7faca21b40a0>
+    <matplotlib.image.AxesImage at 0x7f6b19176070>
 
 
 
@@ -182,12 +182,12 @@ IPythonViz(model)
 
 
 
-<script type="text/javascript" id="2b4e9dd6-1b14-4cd2-8faf-2300bca115ea">
+<script type="text/javascript" id="4e3759c5-b772-404f-a3b6-5035228d649c">
 {
     let req = new XMLHttpRequest();
     req.addEventListener("load", function() {
         if (this.status != 200 && this.response != 'OK') {
-            let p = document.getElementById('2b4e9dd6-1b14-4cd2-8faf-2300bca115ea').parentNode;
+            let p = document.getElementById('4e3759c5-b772-404f-a3b6-5035228d649c').parentNode;
             p.innerHTML +=
                 'The nengo_gui.jupyter notebook server ' +
                 'extension was not loaded. Please activate it ' +
@@ -206,9 +206,9 @@ IPythonViz(model)
 
 
 
-<div id="f8e4845e-e468-4a99-848b-72fada7892eb">
+<div id="16768132-404e-48ca-9f0d-89f75bd5f1a8">
     <iframe
-        src="./nengo/32841/?token=e7042c5505bbfd5b22f901db76c0d4918b0039b4d943aecf"
+        src="./nengo/35257/?token=de5468d92aa23c077522683926df0e4d363cd211bdebd2d3"
         width="100%"
         height="600"
         frameborder="0"
