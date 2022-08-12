@@ -1,2 +1,6 @@
+# Ignore compiled and checkpoints
 .ipynb_checkpoints
 __pycache__
+
+# Ignore models
+*.pth
