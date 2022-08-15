@@ -24,9 +24,10 @@ import torch
 import tensorflow as tf
 import torch.nn as nn
 import numpy as np
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from tqdm.notebook import tqdm
+from matplotlib import pyplot as plt
 ```
 
 ```python
@@ -93,8 +94,10 @@ class IncompleteMNIST(Dataset):
         return len(self.labels)
     
     def __getitem__(self, idx):
-        return self.transform(self.imgs[idx]), self.labels[idx]
-            
+        img = self.imgs[idx]
+        assert len(img.shape) == 2, \
+            f"Image shape is {img.shape} instead of (28 x 28), \multi-image indexing is not supported."
+        return self.transform(img), self.labels[idx]
 ```
 
 ```python
@@ -313,10 +316,125 @@ plt.title("Validation Loss")
 From the above experiment, we can see that if you sequentially feed a model with data that it has not seen before and ask it to train on it with SGD, the loss and error will monotonously increase with each new datapoint being trained on. This is much like the online case where the model seems to disregard what it has previously learned and overfit on the latest new data. Next, we should look into some possible solutions (albeit naive ones).
 
 
-## Data Replay
+## Batch Replay
 
-One insight about continual learning is that humans don't just learn from new data. We compare and contrast with past memory of what we already know. We can try to replicate this by assuming a perfect memory (or storage) of past data, and we stochastically sample each batch to mix with the new incoming data.
+One insight about continual learning is that humans don't just learn from new data. We compare and contrast with past memory of what we already know. We can try to replicate this by assuming a perfect memory (or storage) of past data, and we stochastically sample each batch to mix with the new incoming data. In the next part, we will implement such as batching mechanism.
 
 ```python
+# Reload a new trained model
+model = LeNet()
+model.load_state_dict(torch.load("best-model.pth"))
+model = model.to(device)
+vloss, verror = validate(model, val_loader)
+print(f"Validation loss: {vloss: .3f}")
+print(f"Validation error: {verror: .3f}")
+```
 
+```python
+optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+```
+
+```python
+# We need a new batching mechanism which mixes new data from 
+# newtrainset with other samples from trainset, forming a batch.
+batch_size = 64
+
+newtrainloader = torch.utils.data.DataLoader(
+                    newtrainset, 
+                    batch_size=batch_size // 10, 
+                    shuffle=True,
+                    num_workers=2
+                )
+losses = []
+errors = []
+
+for i, data in tqdm(enumerate(newtrainloader), total=len(newtrainloader)):
+    img1, label1 = data
+    
+    # Create a temporary data loader
+    # with stochastic samples of 0 - 8 data
+    tmploader = DataLoader(
+        trainset, 
+        batch_size=batch_size - batch_size // 10,
+        sampler=np.random.permutation(len(trainset)),
+        num_workers=2
+    )
+    
+    for _, data2 in enumerate(tmploader):
+        img2, label2 = data2
+        break
+        
+    # Collate the batch
+    imgs = torch.cat((img1, img2), dim=0)
+    labels = torch.cat((label1, label2))
+    
+    # Shuffle the data and labels
+    indices = torch.randperm(len(labels))
+    imgs = imgs[indices]
+    labels = labels[indices]
+    
+    optimizer.zero_grad()
+
+    # Forward pass
+    outputs = model(imgs.to(device))
+
+    # Compute loss and backpropagate error gradients
+    loss = criterion(outputs, labels.to(device))
+    loss.backward()
+
+    # Gradient descent
+    optimizer.step()
+
+    vloss, verror = validate(model, val_loader)
+    
+    # For plotting
+    losses.append(vloss.item())
+    errors.append(verror.item())
+    
+```
+
+```python
+plt.plot(losses)
+plt.ylabel("loss")
+plt.xlabel("Batch number")
+plt.title("Validation Loss")
+```
+
+```python
+plt.plot(errors)
+plt.ylabel("error")
+plt.xlabel("number of samples")
+plt.title("Validation Error")
+```
+
+With the batching strategy, the validation error and loss no longer monotonously increase when tested on the old validation set of samples with labels 0 - 8. We can also inspect how the model performs on samples of 9.
+
+```python
+newvalset = IncompleteMNIST(holdout=False, train=False)
+print(f"{len(newvalset)} training data")
+newvalloader = torch.utils.data.DataLoader(
+                    newvalset, 
+                    batch_size=16, 
+                    shuffle=True,
+                    num_workers=2
+                )
+loss, error = validate(model, newvalloader)
+print(f"Validation loss: {loss.item():.3f}")
+print(f"Validation error: {error.item():.3f}")
+```
+
+```python
+# This is the average for samples 0 - 8
+loss, error = validate(model, val_loader)
+print(f"Validation loss: {loss.item():.3f}")
+print(f"Validation error: {error.item():.3f}")
+```
+
+```python
+# Sanity check
+img, label = newvalset[0]
+predict = model(img.unsqueeze(0).to(device))
+predicted_label = torch.argmax(torch.softmax(predict, dim=1))
+print(f"Predicted label: {predicted_label}")
+print(f"Actual label: {label}")
 ```
